@@ -9,6 +9,8 @@ import {
   ReportConfig,
   ReportData,
   ExerciseStats,
+  SetData,
+  ExerciseCategory,
 } from '../types';
 import {STORAGE_KEYS, DEFAULT_QUICK_ACTIONS} from '../constants';
 import {
@@ -20,11 +22,32 @@ import {
   getExerciseStats as getExerciseStatsUtil,
 } from '../utils';
 
+/**
+ * 训练草稿状态 - 用于自动保存当前进行中的训练
+ * 用户可以随时切换动作，数据不会丢失
+ */
+export interface TrainingDraft {
+  id: string;
+  startedAt: number;
+  exercises: ExerciseRecord[];
+  currentExercise: {
+    exerciseId: string;
+    exerciseName: string;
+    category: ExerciseCategory;
+    sets: SetData[];
+  } | null;
+}
+
 interface TrainStore {
+  // ========== 核心数据 ==========
   sessions: TrainingSession[];
   exercises: Exercise[];
   quickActions: string[];
 
+  // ========== 草稿状态 ==========
+  draft: TrainingDraft | null;
+
+  // ========== Session 操作 ==========
   addSession: (session: TrainingSession) => void;
   updateSession: (id: string, updates: Partial<TrainingSession>) => void;
   deleteSession: (id: string) => void;
@@ -33,13 +56,24 @@ interface TrainStore {
   getSessionsByDateRange: (startDate: string, endDate: string) => TrainingSession[];
   getRecentSessions: (limit?: number) => TrainingSession[];
 
+  // ========== Exercise 操作 ==========
   addExercise: (exercise: Exercise) => void;
   updateExercise: (id: string, updates: Partial<Exercise>) => void;
   deleteExercise: (id: string) => void;
   getExerciseById: (id: string) => Exercise | undefined;
 
+  // ========== 快捷方式 ==========
   updateQuickActions: (exerciseIds: string[]) => void;
 
+  // ========== 草稿操作 ==========
+  startDraft: () => void;
+  addExerciseToDraft: (record: ExerciseRecord) => void;
+  updateDraftCurrentExercise: (exercise: TrainingDraft['currentExercise']) => void;
+  addSetToDraftCurrentExercise: (set: SetData) => void;
+  clearDraft: () => void;
+  getDraft: () => TrainingDraft | null;
+
+  // ========== 统计 ==========
   getStats: () => TrainingStats;
   getExerciseStats: (exerciseId: string) => ExerciseStats | null;
   getReportData: (config: ReportConfig) => ReportData;
@@ -48,10 +82,13 @@ interface TrainStore {
 export const useTrainStore = create<TrainStore>()(
   persist(
     (set, get) => ({
+      // ========== 初始状态 ==========
       sessions: [],
       exercises: [],
       quickActions: DEFAULT_QUICK_ACTIONS,
+      draft: null,
 
+      // ========== Session 操作 ==========
       addSession: (session: TrainingSession) => {
         set(state => ({
           sessions: [session, ...state.sessions],
@@ -88,6 +125,7 @@ export const useTrainStore = create<TrainStore>()(
         return get().sessions.slice(0, limit);
       },
 
+      // ========== Exercise 操作 ==========
       addExercise: (exercise: Exercise) => {
         set(state => ({
           exercises: [...state.exercises, {...exercise, isCustom: true}],
@@ -112,10 +150,73 @@ export const useTrainStore = create<TrainStore>()(
         return get().exercises.find(e => e.id === id);
       },
 
+      // ========== 快捷方式 ==========
       updateQuickActions: (exerciseIds: string[]) => {
         set({quickActions: exerciseIds});
       },
 
+      // ========== 草稿操作 ==========
+      startDraft: () => {
+        const now = Date.now();
+        set({
+          draft: {
+            id: `draft_${now}`,
+            startedAt: now,
+            exercises: [],
+            currentExercise: null,
+          },
+        });
+      },
+
+      addExerciseToDraft: (record: ExerciseRecord) => {
+        set(state => {
+          if (!state.draft) return state;
+          return {
+            draft: {
+              ...state.draft,
+              exercises: [...state.draft.exercises, record],
+              currentExercise: null,
+            },
+          };
+        });
+      },
+
+      updateDraftCurrentExercise: (exercise: TrainingDraft['currentExercise']) => {
+        set(state => {
+          if (!state.draft) return state;
+          return {
+            draft: {
+              ...state.draft,
+              currentExercise: exercise,
+            },
+          };
+        });
+      },
+
+      addSetToDraftCurrentExercise: (set: SetData) => {
+        set(state => {
+          if (!state.draft || !state.draft.currentExercise) return state;
+          return {
+            draft: {
+              ...state.draft,
+              currentExercise: {
+                ...state.draft.currentExercise,
+                sets: [...state.draft.currentExercise.sets, set],
+              },
+            },
+          };
+        });
+      },
+
+      clearDraft: () => {
+        set({draft: null});
+      },
+
+      getDraft: () => {
+        return get().draft;
+      },
+
+      // ========== 统计 ==========
       getStats: () => {
         const sessions = get().sessions;
         const totalSessions = sessions.length;

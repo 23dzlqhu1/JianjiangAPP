@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,9 +12,8 @@ import {
   Platform,
 } from 'react-native';
 import { useTrainStore } from '../stores/trainStore';
-import { InlineSetInput, CompletedSetItem, QuickActions } from '../components';
+import { InlineSetInput, CompletedSetItem } from '../components';
 import {
-  EXERCISE_TEMPLATES,
   CATEGORY_NAMES,
   COLORS,
   SPACING,
@@ -32,35 +31,47 @@ import {
 import { generateId, formatDate } from '../utils';
 
 /**
- * TrainingScreen - 训练记录页面 (UX重构版)
+ * TrainingScreen - 训练记录页面 (UX重构版 Phase 3)
  * 
  * 核心改进:
  * 1. 顶部 Tab 导航替代左右分栏
  * 2. 行内编辑替代 Modal 弹窗
- * 3. 自动保存草稿，减少确认弹窗
+ * 3. ✅ Draft 状态自动保存，无感交互
  * 4. 阴影+留白替代边框线
  */
 
 export const TrainingScreen: React.FC = () => {
-  const { addSession, exercises, quickActions, addExercise } = useTrainStore();
+  const {
+    addSession,
+    exercises,
+    quickActions,
+    addExercise,
+    draft,
+    startDraft,
+    addExerciseToDraft,
+    updateDraftCurrentExercise,
+    clearDraft,
+  } = useTrainStore();
 
-  // ========== 状态管理 ==========
+  // ========== 本地状态（UI 状态） ==========
   const [selectedCategory, setSelectedCategory] = useState<ExerciseCategory>('chest');
-  const [selectedExercise, setSelectedExercise] = useState<Exercise | null>(null);
-  const [currentSets, setCurrentSets] = useState<SetData[]>([]);
   const [showExerciseList, setShowExerciseList] = useState(true);
-  const [currentSessionExercises, setCurrentSessionExercises] = useState<ExerciseRecord[]>([]);
+  const [editingSetIndex, setEditingSetIndex] = useState<number | null>(null);
 
   // 模板选择弹窗
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<ExerciseTemplate | null>(null);
   const [customExerciseName, setCustomExerciseName] = useState('');
 
-  // 编辑中的组
-  const [editingSetIndex, setEditingSetIndex] = useState<number | null>(null);
-
   // 分类列表
   const categories: ExerciseCategory[] = ['chest', 'back', 'legs', 'shoulders', 'arms', 'core'];
+
+  // ========== 初始化 Draft ==========
+  useEffect(() => {
+    if (!draft) {
+      startDraft();
+    }
+  }, []);
 
   // ========== 计算属性 ==========
   const categoryTemplates = useMemo(() => {
@@ -78,11 +89,20 @@ export const TrainingScreen: React.FC = () => {
       .slice(0, 4);
   }, [quickActions, exercises]);
 
+  // 当前正在编辑的动作
+  const currentExercise = draft?.currentExercise;
+
+  // 当前动作的组数
+  const currentSets = currentExercise?.sets || [];
+
   // 获取上一组数据（用于默认继承）
   const lastSet = useMemo(() => {
     if (currentSets.length === 0) return null;
     return currentSets[currentSets.length - 1];
   }, [currentSets]);
+
+  // 本次训练已完成的动作
+  const sessionExercises = draft?.exercises || [];
 
   // ========== 动作处理 ==========
   const handleCreateFromTemplate = useCallback((template: ExerciseTemplate) => {
@@ -106,79 +126,98 @@ export const TrainingScreen: React.FC = () => {
 
     addExercise(newExercise);
     setShowTemplateModal(false);
-    setSelectedExercise(newExercise);
+    
+    // 自动开始编辑新创建的动作
+    updateDraftCurrentExercise({
+      exerciseId: newExercise.id,
+      exerciseName: newExercise.name,
+      category: newExercise.category,
+      sets: [],
+    });
     setShowExerciseList(false);
     setCustomExerciseName('');
-  }, [selectedTemplate, customExerciseName, addExercise]);
+  }, [selectedTemplate, customExerciseName, addExercise, updateDraftCurrentExercise]);
 
   const handleExerciseSelect = useCallback((exercise: Exercise) => {
-    setSelectedExercise(exercise);
+    updateDraftCurrentExercise({
+      exerciseId: exercise.id,
+      exerciseName: exercise.name,
+      category: exercise.category,
+      sets: [],
+    });
     setShowExerciseList(false);
-    setCurrentSets([]);
     setEditingSetIndex(null);
-  }, []);
+  }, [updateDraftCurrentExercise]);
 
   // ========== 组数处理 ==========
   const handleAddSet = useCallback((set: SetData) => {
+    if (!currentExercise) return;
+
+    const newSets = [...currentSets];
     if (editingSetIndex !== null) {
       // 编辑模式
-      setCurrentSets(prev => {
-        const newSets = [...prev];
-        newSets[editingSetIndex] = set;
-        return newSets;
-      });
+      newSets[editingSetIndex] = set;
       setEditingSetIndex(null);
     } else {
       // 新增模式
-      setCurrentSets(prev => [...prev, set]);
+      newSets.push(set);
     }
-  }, [editingSetIndex]);
+
+    updateDraftCurrentExercise({
+      ...currentExercise,
+      sets: newSets,
+    });
+  }, [currentExercise, currentSets, editingSetIndex, updateDraftCurrentExercise]);
 
   const handleEditSet = useCallback((index: number) => {
     setEditingSetIndex(index);
   }, []);
 
   const handleDeleteSet = useCallback((index: number) => {
-    setCurrentSets(prev => prev.filter((_, i) => i !== index));
+    if (!currentExercise) return;
+
+    const newSets = currentSets.filter((_, i) => i !== index);
+    updateDraftCurrentExercise({
+      ...currentExercise,
+      sets: newSets,
+    });
+
     if (editingSetIndex === index) {
       setEditingSetIndex(null);
     }
-  }, [editingSetIndex]);
+  }, [currentExercise, currentSets, editingSetIndex, updateDraftCurrentExercise]);
 
   const handleAddExerciseToSession = useCallback(() => {
-    if (!selectedExercise || currentSets.length === 0) return;
+    if (!currentExercise || currentSets.length === 0) return;
 
     const exerciseRecord: ExerciseRecord = {
-      exerciseId: selectedExercise.id,
-      exerciseName: selectedExercise.name,
+      exerciseId: currentExercise.exerciseId,
+      exerciseName: currentExercise.exerciseName,
       sets: [...currentSets],
     };
 
-    setCurrentSessionExercises(prev => [...prev, exerciseRecord]);
-    setSelectedExercise(null);
-    setCurrentSets([]);
-    setEditingSetIndex(null);
+    addExerciseToDraft(exerciseRecord);
     setShowExerciseList(true);
-  }, [selectedExercise, currentSets]);
+    setEditingSetIndex(null);
+  }, [currentExercise, currentSets, addExerciseToDraft]);
 
   const handleFinishTraining = useCallback(() => {
-    if (currentSessionExercises.length === 0) return;
+    if (sessionExercises.length === 0) return;
 
     const now = Date.now();
     const session: TrainingSession = {
       id: generateId(),
       date: formatDate(new Date()),
-      exercises: currentSessionExercises,
+      exercises: sessionExercises,
       createdAt: now,
       updatedAt: now,
     };
 
     addSession(session);
-    setCurrentSessionExercises([]);
-    setSelectedExercise(null);
-    setCurrentSets([]);
+    clearDraft();
+    startDraft(); // 开始新的草稿
     setShowExerciseList(true);
-  }, [currentSessionExercises, addSession]);
+  }, [sessionExercises, addSession, clearDraft, startDraft]);
 
   // ========== 渲染 ==========
   return (
@@ -186,7 +225,7 @@ export const TrainingScreen: React.FC = () => {
       {/* 顶部导航栏 */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>训练记录</Text>
-        {currentSessionExercises.length > 0 && (
+        {sessionExercises.length > 0 && (
           <TouchableOpacity onPress={handleFinishTraining} style={styles.finishBtn}>
             <Text style={styles.finishBtnText}>完成训练</Text>
           </TouchableOpacity>
@@ -194,11 +233,11 @@ export const TrainingScreen: React.FC = () => {
       </View>
 
       {/* 本次训练摘要 */}
-      {currentSessionExercises.length > 0 && (
+      {sessionExercises.length > 0 && (
         <View style={styles.sessionSummary}>
-          <Text style={styles.summaryTitle}>本次训练 · {currentSessionExercises.length} 个动作</Text>
+          <Text style={styles.summaryTitle}>本次训练 · {sessionExercises.length} 个动作</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            {currentSessionExercises.map((ex, index) => (
+            {sessionExercises.map((ex, index) => (
               <View key={index} style={styles.summaryItem}>
                 <Text style={styles.summaryItemName}>{ex.exerciseName}</Text>
                 <Text style={styles.summaryItemSets}>{ex.sets.length}组</Text>
@@ -332,7 +371,7 @@ export const TrainingScreen: React.FC = () => {
   }
 
   function SetRecorderView() {
-    if (!selectedExercise) return null;
+    if (!currentExercise) return null;
 
     return (
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
@@ -341,15 +380,13 @@ export const TrainingScreen: React.FC = () => {
           <TouchableOpacity
             style={styles.backBtn}
             onPress={() => {
+              // ✅ 使用 Draft：自动保存当前进度，无需确认
               setShowExerciseList(true);
-              setSelectedExercise(null);
-              setCurrentSets([]);
-              setEditingSetIndex(null);
             }}
           >
             <Text style={styles.backBtnText}>‹ 返回</Text>
           </TouchableOpacity>
-          <Text style={styles.exerciseTitle}>{selectedExercise.name}</Text>
+          <Text style={styles.exerciseTitle}>{currentExercise.exerciseName}</Text>
         </View>
 
         {/* 已完成的组数列表 */}
@@ -475,7 +512,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.lg,
     paddingVertical: SPACING.md,
     backgroundColor: COLORS.surface,
-    // 使用阴影替代边框
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.04,
@@ -545,7 +581,6 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     marginBottom: SPACING.md,
   },
-  // 快捷方式
   quickActionsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -556,7 +591,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.md,
     paddingVertical: SPACING.sm,
     borderRadius: 20,
-    // 阴影
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.04,
@@ -568,7 +602,6 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontWeight: FONTS.weight.medium,
   },
-  // 分类 Tabs
   categoryTabs: {
     paddingVertical: SPACING.md,
     paddingHorizontal: SPACING.lg,
@@ -606,7 +639,6 @@ const styles = StyleSheet.create({
     fontSize: FONTS.size.xs,
     color: COLORS.text,
   },
-  // 模板卡片
   templatesGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -617,7 +649,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderRadius: 12,
     padding: SPACING.md,
-    // 阴影替代边框
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
@@ -649,7 +680,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 4,
   },
-  // 动作卡片
   exerciseCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -657,7 +687,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: SPACING.md,
     marginBottom: SPACING.sm,
-    // 阴影
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.04,
@@ -681,7 +710,6 @@ const styles = StyleSheet.create({
     fontSize: FONTS.size.xl,
     color: COLORS.textSecondary,
   },
-  // 组数录入区
   recorderHeader: {
     padding: SPACING.lg,
     marginBottom: SPACING.sm,
@@ -704,7 +732,6 @@ const styles = StyleSheet.create({
     padding: SPACING.lg,
     borderRadius: 12,
     alignItems: 'center',
-    // 阴影
     shadowColor: COLORS.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
@@ -718,7 +745,6 @@ const styles = StyleSheet.create({
   },
 });
 
-// 弹窗样式
 const modalStyles = StyleSheet.create({
   overlay: {
     flex: 1,
