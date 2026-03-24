@@ -14,6 +14,7 @@ export {MuscleMap} from './MuscleMap';
 // 训练组件
 export {SetInput} from './SetInput';
 export {SetItem} from './SetItem';
+export {InlineSetInput, CompletedSetItem} from './InlineSetInput';
 export {ExerciseSession} from './ExerciseSession';
 export {QuickActions} from './QuickActions';
 
